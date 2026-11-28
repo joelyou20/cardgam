@@ -1,5 +1,12 @@
 extends Node2D
 
+const HeroActions := preload("res://hero_actions.gd")
+const HERO_ART := {
+	"Gier": preload("res://art/gier.png"),
+	"Moonrose": preload("res://art/moonrose.png"),
+	"Xola Kain": preload("res://art/xola_kain.png"),
+	"The Necroblade": preload("res://art/necroblade.png"),
+}
 const PLAYER_ART := preload("res://art/vanguard.png")
 const ENEMY_ART := preload("res://art/raider.png")
 const TERRAIN_ART := preload("res://art/terrain.png")
@@ -15,10 +22,18 @@ const CONTROLS := ["LMB", "RMB", "SPACE", "R"]
 const ABILITIES := {
 	"Vanguard": ["Slash", "Sweep", "Dash", "Aftershock"],
 	"Warden": ["Mace", "Shield Bash", "Guard Step", "Bulwark"],
+	"Gier": ["Hammerfall", "Faultbreaker", "Leap Slam", "Whirlwind"],
+	"Moonrose": ["Piercing Arrow", "Arrow Fan", "Vanish", "Arrow Barrage"],
+	"Xola Kain": ["Returning Blade", "Double Orbit", "Trap Leap", "Casting Net"],
+	"The Necroblade": ["Siphon", "Grave Harvest", "Totem Step", "Detonate"],
 }
 const COOLDOWNS := {
 	"Vanguard": [0.42, 2.0, 2.4, 5.0],
 	"Warden": [0.55, 1.7, 2.7, 5.5],
+	"Gier": [0.8, 1.9, 2.9, 7.0],
+	"Moonrose": [0.48, 2.0, 3.1, 8.0],
+	"Xola Kain": [0.85, 2.4, 3.1, 6.0],
+	"The Necroblade": [0.63, 2.5, 3.0, 5.0],
 }
 const AUGMENTS := {
 	"Vanguard": {
@@ -33,7 +48,33 @@ const AUGMENTS := {
 		"Landing Bell": "Guard Step staggers nearby enemies when you land.",
 		"Beacon Oath": "Bulwark heals you when the shield blocks a hit.",
 	},
+	"Gier": {
+		"Fault Line": "Hammerfall erupts across a wider area.",
+		"Ringing Blow": "Faultbreaker stuns enemies along the line.",
+		"Afterquake": "Leap Slam leaves a delayed second eruption.",
+		"Wide Swing": "Whirlwind reaches enemies farther from you.",
+	},
+	"Moonrose": {
+		"Silver Fan": "Arrow Fan fires seven arrows instead of five.",
+		"Moonstep": "Vanish leaves a decoy that bursts and staggers enemies.",
+		"Pinning Rain": "Arrow Barrage briefly staggers on each hit.",
+	},
+	"Xola Kain": {
+		"Hooked Return": "Returning Blade hits harder on the way back.",
+		"Wide Orbit": "Double Orbit circles at a larger radius.",
+		"Barbed Spring": "Trap Leap's trap damages enemies as well as stunning them.",
+		"Tight Weave": "Casting Net pulls enemies farther toward its center.",
+	},
+	"The Necroblade": {
+		"Blood Tithe": "Siphon heals twice as much from enemies hit.",
+		"Frenzied Bones": "Skeletons strike more often.",
+		"Bone Idol": "Totems withstand more enemy hits.",
+		"Grave Powder": "Detonated summons damage a larger area.",
+	},
 }
+
+var hero := HeroActions.new(self)
+var next_enemy_id := 0
 
 var phase := "title"
 var position_in_arena := BEACON
@@ -138,13 +179,15 @@ func show_menu(title: String, description: String) -> void:
 func add_option(label: String, action: Callable) -> void:
 	var button := Button.new()
 	button.text = label
-	button.custom_minimum_size.y = 50
+	button.custom_minimum_size.y = 42 if phase == "title" else 50
 	button.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	button.pressed.connect(action)
 	options.add_child(button)
 
 func show_title() -> void:
 	player_is_warden = false
+	character = "Vanguard"
+	hero = HeroActions.new(self)
 	phase = "title"
 	deck.clear()
 	enemies.clear()
@@ -154,15 +197,17 @@ func show_title() -> void:
 	position_in_arena = BEACON
 	hud.text = ""
 	notice.text = ""
-	show_menu("Cardgam", "Survive the first wave, draft ability augments, and decide what happens at the crossing.\n\nWASD or arrows to move. Aim with the mouse. Left click attacks, right click uses your secondary, Space moves, and R uses your special.\n\nEmbers: %d" % embers)
-	add_option("Play as Vanguard · Slash, Sweep, Dash, Aftershock", start_run.bind("Vanguard"))
+	show_menu("Cardgam", "WASD or arrows to move · Mouse to aim\nLeft / right click to attack · Space to move · R for special\nEmbers: %d" % embers)
+	add_option("Vanguard", start_run.bind("Vanguard"))
 	if warden_unlocked:
-		add_option("Play as Warden · Mace, Shield Bash, Guard Step, Bulwark", start_run.bind("Warden"))
+		add_option("Warden", start_run.bind("Warden"))
 	elif embers >= 3:
 		add_option("Unlock Warden · 3 embers", unlock_warden)
 	else:
 		add_option("Warden · unlocks for 3 embers", func(): pass)
 		(options.get_child(-1) as Button).disabled = true
+	for name in HERO_ART:
+		add_option(name, start_run.bind(name))
 
 func unlock_warden() -> void:
 	embers -= 3
@@ -181,6 +226,8 @@ func start_run(chosen_character: String) -> void:
 	begin_fight()
 
 func begin_fight() -> void:
+	hero = HeroActions.new(self)
+	next_enemy_id = 0
 	phase = "fight"
 	position_in_arena = BEACON + Vector2(0, 85) if route == "bridge" else BEACON
 	facing = Vector2.RIGHT
@@ -213,7 +260,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event is InputEventKey and event.pressed and not event.echo:
 		if phase == "booster":
 			var option: int = [KEY_1, KEY_2, KEY_3].find(event.keycode)
-			if option >= 0:
+			if option >= 0 and option + 2 < options.get_child_count():
 				(options.get_child(option + 2) as Button).pressed.emit()
 				get_viewport().set_input_as_handled()
 		elif event.keycode == KEY_SPACE:
@@ -222,7 +269,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			ability = Ability.SPECIAL
 	if ability >= 0 and phase == "fight":
 		var aim := (target - SCREEN_CENTER).normalized()
-		use_ability(ability, aim if aim != Vector2.ZERO else facing)
+		use_ability(ability, aim if aim != Vector2.ZERO else facing, position_in_arena + target - SCREEN_CENTER)
 		get_viewport().set_input_as_handled()
 
 func _physics_process(delta: float) -> void:
@@ -248,7 +295,8 @@ func update_fight(delta: float) -> void:
 		cooldowns[index] = maxf(0.0, cooldowns[index] - delta)
 	invulnerable = maxf(0.0, invulnerable - delta)
 	var direction := movement_input()
-	if dash_left > 0.0:
+	var leaping := hero.update_leap(delta)
+	if not leaping and dash_left > 0.0:
 		var step := minf(delta, dash_left)
 		dash_left -= step
 		position_in_arena += facing * 690.0 * step
@@ -257,13 +305,14 @@ func update_fight(delta: float) -> void:
 				create_fire(position_in_arena)
 			if "Landing Bell" in deck:
 				strike(position_in_arena, facing, 75.0, -1.0, 0, 0.0, 1.3)
-	else:
+	elif not leaping:
 		face_direction(direction)
-		position_in_arena += direction * 226.0 * delta
+		position_in_arena += direction * (310.0 if hero.spin > 0.0 else 226.0) * delta
 	spawn_left -= delta
 	if spawn_left <= 0.0:
 		spawn_enemy()
 		spawn_left = maxf(0.28, 0.83 - elapsed * 0.019 - (stage - 1) * 0.12)
+	hero.update(delta)
 	update_fires(delta)
 	for enemy in enemies:
 		move_enemy(enemy, delta)
@@ -314,7 +363,9 @@ func spawn_enemy(elite := false) -> void:
 		point = Vector2(940, 240)
 	else:
 		point += anchor - SCREEN_CENTER
+	next_enemy_id += 1
 	enemies.append({
+		"id": next_enemy_id,
 		"pos": point,
 		"hp": 24 if elite else 3,
 		"speed": 115.0 if elite else rng.randf_range(80.0, 137.0),
@@ -332,7 +383,12 @@ func move_enemy(enemy: Dictionary, delta: float) -> void:
 	if enemy.stagger > 0:
 		enemy.stagger -= delta
 		return
+	var ally := hero.lure(enemy.pos)
 	var target := BEACON if enemy.raider else position_in_arena
+	if not ally.is_empty():
+		target = ally.pos
+	elif not enemy.raider and hero.hidden > 0.0:
+		target = enemy.pos
 	var offset: Vector2 = target - enemy.pos
 	if absf(offset.x) > 1.0:
 		enemy.looks_left = offset.x < 0.0
@@ -342,7 +398,10 @@ func move_enemy(enemy: Dictionary, delta: float) -> void:
 	if enemy.attack > 0.0:
 		return
 	var distance: float = enemy.pos.distance_to(position_in_arena)
-	if distance <= contact and invulnerable <= 0.0:
+	if not ally.is_empty() and offset.length() <= contact:
+		ally.hp -= 1
+		enemy.attack = 0.62
+	elif distance <= contact and invulnerable <= 0.0:
 		enemy.attack = 0.8
 		invulnerable = 0.65
 		if shield:
@@ -352,21 +411,27 @@ func move_enemy(enemy: Dictionary, delta: float) -> void:
 				health = mini(30, health + 4)
 		else:
 			health = maxi(0, health - (4 if enemy.elite else 2))
+			hero.hidden = 0.0
 			add_effect(position_in_arena, 28, Color("#ef746a"))
-	elif enemy.raider and offset.length() <= contact:
+	elif enemy.raider and ally.is_empty() and offset.length() <= contact:
 		beacon_health = maxi(0, beacon_health - 1)
 		enemy.attack = 1.0
 		add_effect(BEACON, 29, Color("#ef746a"))
 
-func use_ability(ability: int, aim: Vector2) -> void:
+func use_ability(ability: int, aim: Vector2, target := Vector2.INF) -> void:
 	if phase != "fight" or cooldowns[ability] > 0.0:
 		return
-	if ability == Ability.SPECIAL and not player_is_warden and last_attack == -1:
+	if ability == Ability.SPECIAL and character == "Vanguard" and last_attack == -1:
 		return
 	# Movement keeps its original direction even if you attack during the dash.
 	if dash_left <= 0.0:
 		face_direction(aim)
 	cooldowns[ability] = COOLDOWNS[character][ability]
+	if HERO_ART.has(character):
+		hero.cast(ability, aim, target if target.is_finite() else position_in_arena + aim * 240.0)
+		remove_defeated()
+		update_hud()
+		return
 	match ability:
 		Ability.PRIMARY, Ability.SECONDARY:
 			perform_attack(ability, aim)
@@ -541,7 +606,15 @@ func draw_actor(art: Texture2D, feet: Vector2, height: float, looks_left: bool, 
 
 func draw_player(feet: Vector2) -> void:
 	var tint := Color("#9fccc8") if player_is_warden else Color.WHITE
-	draw_actor(PLAYER_ART, feet, 48.0, player_looks_left, tint)
+	if hero.hidden > 0.0:
+		tint.a = 0.26
+	var art: Texture2D = HERO_ART.get(character, PLAYER_ART)
+	var looks_left := player_looks_left
+	if hero.spin > 0.0:
+		looks_left = fmod(hero.spin * 11.0, 2.0) > 1.0
+		var angle := hero.spin * -14.0
+		draw_arc(feet, 56.0, angle, angle + PI * 1.45, 32, Color("#ef9f57"), 4.0, true)
+	draw_actor(art, feet - Vector2(0, hero.lift), 48.0, looks_left, tint)
 	if shield:
 		draw_arc(feet, 21.0, 0, TAU, 24, Color("#91cbbb"), 2.0)
 
@@ -582,6 +655,7 @@ func _draw() -> void:
 	for fire in fires:
 		draw_circle(fire.pos - offset, 72.0, Color(0.96, 0.38, 0.19, 0.19))
 		draw_circle(fire.pos - offset, 72.0, Color("#dc764d"), false, 2.0)
+	hero.draw_world(offset)
 	var actors := enemies.duplicate()
 	actors.sort_custom(func(a, b): return a.pos.y < b.pos.y)
 	var player_drawn := false

@@ -16,5 +16,15 @@ Cardgam is a Godot 4.7 prototype for a real-time arena battler. Import
   captain. Finished runs earn embers even on defeat. Spend three to unlock
   the Warden. Progress is saved locally by Godot.
 
-The PNGs in `main/art` include two single-frame, right-facing sprites and a
+Gier, Moonrose, Xola Kain, and the Necroblade are available immediately for
+playtesting. Each has a separate pool of passive augments.
+
+| Character | Left click | Right click | Space | R |
+| --- | --- | --- | --- | --- |
+| Gier | Delayed ground eruption | Line strike | Leap and slam | Three-second moving whirlwind |
+| Moonrose | Piercing arrow | Knockback arrow fan | Teleport and vanish | Five-second barrage at the cursor |
+| Xola Kain | Out-and-back boomerang | Two-orbit boomerang | Leap and leave a stun trap | Pull and stun with a net |
+| The Necroblade | Siphon health in a cone | Raise slain enemies as skeletons | Teleport and leave a lure totem | Detonate surviving summons |
+
+The PNGs in `main/art` include single-frame, right-facing sprites and a
 four-tile isometric terrain atlas. The atlas stores 64 × 32 tiles left to right.
