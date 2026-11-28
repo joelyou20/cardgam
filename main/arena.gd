@@ -6,23 +6,33 @@ const TERRAIN_ART := preload("res://art/terrain.png")
 const TILE_SIZE := Vector2(64, 32)
 const FIELD := Rect2(24, 80, 1072, 560)
 const SCREEN_CENTER := Vector2(560, 360)
-const FOCUS_SPEED := 0.25
 const SPAWN_MARGIN := 32.0
 const DESPAWN_RADIUS := 1250.0
 const BEACON := Vector2(560, 300)
-const STARTER := ["Strike", "Sweep", "Dash", "Shove"]
-const BOOSTERS := ["Cinder Ring", "Rally", "Harpoon", "Kindle"]
-const CARDS := {
-	"Strike": ["ATTACK", "Deal 3 to the nearest foe."],
-	"Sweep": ["ATTACK", "Deal 2 to each foe close by."],
-	"Dash": ["UTILITY", "Dash through foes in your travel direction."],
-	"Shove": ["UTILITY", "Push nearby foes away and stagger them."],
-	"Aftershock": ["SPECIAL", "Repeat your last attack from here."],
-	"Bulwark": ["SPECIAL", "Gain a shield. When hit, shove nearby foes."],
-	"Cinder Ring": ["ATTACK", "Leave a burning ring that damages foes inside."],
-	"Rally": ["UTILITY", "Heal 2 for each nearby staggered foe, up to 6."],
-	"Harpoon": ["ATTACK", "Deal 2 to the nearest foe and pull it close."],
-	"Kindle": ["UTILITY", "Your next attack also creates a burning ring."],
+enum Ability { PRIMARY, SECONDARY, MOVEMENT, SPECIAL }
+
+const CONTROLS := ["LMB", "RMB", "SPACE", "R"]
+const ABILITIES := {
+	"Vanguard": ["Slash", "Sweep", "Dash", "Aftershock"],
+	"Warden": ["Mace", "Shield Bash", "Guard Step", "Bulwark"],
+}
+const COOLDOWNS := {
+	"Vanguard": [0.42, 2.0, 2.4, 5.0],
+	"Warden": [0.55, 1.7, 2.7, 5.5],
+}
+const AUGMENTS := {
+	"Vanguard": {
+		"Kindling": "Slash ignites a patch beneath the first enemy it hits.",
+		"Undertow": "Sweep pulls enemies toward you, setting up a close-range follow-up.",
+		"Scorched Trail": "Dash leaves fire at both ends of its path.",
+		"Double Echo": "Aftershock echoes both attacks when you alternate Slash and Sweep.",
+	},
+	"Warden": {
+		"Crack the Line": "Mace hits against staggered enemies send a shockwave into nearby foes.",
+		"Rebound": "Enemies knocked back by Shield Bash damage nearby foes where they land.",
+		"Landing Bell": "Guard Step staggers nearby enemies when you land.",
+		"Beacon Oath": "Bulwark heals you when the shield blocks a hit.",
+	},
 }
 
 var phase := "title"
@@ -35,8 +45,7 @@ var health := 30
 var beacon_health := 12
 var invulnerable := 0.0
 var shield := false
-var kindled := false
-var cooldown := 0.0
+var cooldowns := [0.0, 0.0, 0.0, 0.0]
 var elapsed := 0.0
 var spawn_left := 0.0
 var kills := 0
@@ -44,18 +53,17 @@ var stage := 1
 var route := ""
 var embers := 0
 var warden_unlocked := false
-var last_attack := ""
-var hand: Array[String] = []
-var draw_pile: Array[String] = []
+var character := "Vanguard"
+var last_attack := -1
+var previous_attack := -1
+var deck: Array[String] = []
 var enemies: Array[Dictionary] = []
 var effects: Array[Dictionary] = []
 var fires: Array[Dictionary] = []
 var rng := RandomNumberGenerator.new()
 
-var focusing := false
 var hud: Label
 var notice: Label
-var slots: Array[Button] = []
 var overlay: PanelContainer
 var options: VBoxContainer
 
@@ -93,20 +101,6 @@ func build_interface() -> void:
 	notice.position = Vector2(28, 48)
 	notice.modulate = Color("#bdb3a9")
 	layer.add_child(notice)
-	var hand_row := HBoxContainer.new()
-	hand_row.position = SCREEN_CENTER + Vector2(-265, 31)
-	hand_row.add_theme_constant_override("separation", 10)
-	hand_row.theme = theme
-	layer.add_child(hand_row)
-	for index in range(4):
-		var button := Button.new()
-		button.custom_minimum_size = Vector2(125, 36)
-		button.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		button.add_theme_font_size_override("font_size", 14)
-		button.focus_mode = Control.FOCUS_NONE
-		button.pressed.connect(play_card.bind(index))
-		hand_row.add_child(button)
-		slots.append(button)
 	overlay = PanelContainer.new()
 	overlay.position = Vector2(245, 115)
 	overlay.custom_minimum_size.x = 630
@@ -140,7 +134,6 @@ func show_menu(title: String, description: String) -> void:
 	detail.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	options.add_child(detail)
 	overlay.set_deferred("size", Vector2(630, 0))
-	refresh_hand()
 
 func add_option(label: String, action: Callable) -> void:
 	var button := Button.new()
@@ -153,7 +146,7 @@ func add_option(label: String, action: Callable) -> void:
 func show_title() -> void:
 	player_is_warden = false
 	phase = "title"
-	hand.clear()
+	deck.clear()
 	enemies.clear()
 	fires.clear()
 	effects.clear()
@@ -161,10 +154,10 @@ func show_title() -> void:
 	position_in_arena = BEACON
 	hud.text = ""
 	notice.text = ""
-	show_menu("Cardgam", "Survive the first wave, draft a card, and decide what happens at the crossing.\n\nMove with WASD or arrows. Play with 1–4 or click a card. Hold Space to slow combat and read your cards.\n\nEmbers: %d" % embers)
-	add_option("Play as Vanguard · Aftershock", start_run.bind("Aftershock"))
+	show_menu("Cardgam", "Survive the first wave, draft ability augments, and decide what happens at the crossing.\n\nWASD or arrows to move. Aim with the mouse. Left click attacks, right click uses your secondary, Space moves, and R uses your special.\n\nEmbers: %d" % embers)
+	add_option("Play as Vanguard · Slash, Sweep, Dash, Aftershock", start_run.bind("Vanguard"))
 	if warden_unlocked:
-		add_option("Play as Warden · Bulwark", start_run.bind("Bulwark"))
+		add_option("Play as Warden · Mace, Shield Bash, Guard Step, Bulwark", start_run.bind("Warden"))
 	elif embers >= 3:
 		add_option("Unlock Warden · 3 embers", unlock_warden)
 	else:
@@ -177,22 +170,18 @@ func unlock_warden() -> void:
 	save_progress()
 	show_title()
 
-func start_run(special: String) -> void:
-	player_is_warden = special == "Bulwark"
-	hand.assign(STARTER)
-	draw_pile.assign([special])
+func start_run(chosen_character: String) -> void:
+	character = chosen_character
+	player_is_warden = character == "Warden"
+	deck.clear()
 	health = 30
 	kills = 0
 	stage = 1
 	route = ""
-	last_attack = ""
-	shield = false
-	kindled = false
 	begin_fight()
 
 func begin_fight() -> void:
 	phase = "fight"
-	focusing = false
 	position_in_arena = BEACON + Vector2(0, 85) if route == "bridge" else BEACON
 	facing = Vector2.RIGHT
 	player_looks_left = false
@@ -202,48 +191,43 @@ func begin_fight() -> void:
 	beacon_health = 12
 	dash_left = 0.0
 	invulnerable = 1.0
-	cooldown = 0.0
+	cooldowns.fill(0.0)
+	last_attack = -1
+	previous_attack = -1
+	shield = false
 	elapsed = 0.0
 	spawn_left = 0.2
 	if route == "road":
 		spawn_enemy(true)
 	overlay.hide()
-	refresh_hand()
 
-func refresh_hand() -> void:
-	for index in range(slots.size()):
-		var button := slots[index]
-		button.visible = phase == "fight"
-		if index >= hand.size():
-			continue
-		var card := hand[index]
-		var description: String = CARDS[card][1]
-		button.text = "%d  %s" % [index + 1, card]
-		button.custom_minimum_size.y = 100 if focusing else 36
-		if focusing:
-			button.text += "\n" + description
-		button.tooltip_text = description
-		button.modulate = Color("#ffc87e") if card in BOOSTERS else Color.WHITE
-
-func _input(event: InputEvent) -> void:
-	if event is InputEventKey and event.pressed and not event.echo:
-		var index: int = [KEY_1, KEY_2, KEY_3, KEY_4].find(event.keycode)
-		if index < 0:
-			return
-		if phase == "fight":
-			play_card(index)
-			get_viewport().set_input_as_handled()
-		elif phase == "booster" and index < 3:
-			(options.get_child(index + 2) as Button).pressed.emit()
-			get_viewport().set_input_as_handled()
+func _unhandled_input(event: InputEvent) -> void:
+	var ability := -1
+	var target := get_global_mouse_position()
+	if event is InputEventMouseButton and event.pressed and phase == "fight":
+		target = event.position
+		if event.button_index == MOUSE_BUTTON_LEFT:
+			ability = Ability.PRIMARY
+		elif event.button_index == MOUSE_BUTTON_RIGHT:
+			ability = Ability.SECONDARY
+	elif event is InputEventKey and event.pressed and not event.echo:
+		if phase == "booster":
+			var option: int = [KEY_1, KEY_2, KEY_3].find(event.keycode)
+			if option >= 0:
+				(options.get_child(option + 2) as Button).pressed.emit()
+				get_viewport().set_input_as_handled()
+		elif event.keycode == KEY_SPACE:
+			ability = Ability.MOVEMENT
+		elif event.keycode == KEY_R:
+			ability = Ability.SPECIAL
+	if ability >= 0 and phase == "fight":
+		var aim := (target - SCREEN_CENTER).normalized()
+		use_ability(ability, aim if aim != Vector2.ZERO else facing)
+		get_viewport().set_input_as_handled()
 
 func _physics_process(delta: float) -> void:
 	if phase == "fight":
-		var focus_held := Input.is_key_pressed(KEY_SPACE)
-		if focus_held != focusing:
-			focusing = focus_held
-			refresh_hand()
-		update_fight(delta * FOCUS_SPEED if focusing else delta)
+		update_fight(delta)
 	queue_redraw()
 
 func movement_input() -> Vector2:
@@ -260,12 +244,19 @@ func face_direction(direction: Vector2) -> void:
 
 func update_fight(delta: float) -> void:
 	elapsed += delta
-	cooldown = maxf(0.0, cooldown - delta)
+	for index in range(cooldowns.size()):
+		cooldowns[index] = maxf(0.0, cooldowns[index] - delta)
 	invulnerable = maxf(0.0, invulnerable - delta)
 	var direction := movement_input()
 	if dash_left > 0.0:
-		dash_left -= delta
-		position_in_arena += facing * 690.0 * delta
+		var step := minf(delta, dash_left)
+		dash_left -= step
+		position_in_arena += facing * 690.0 * step
+		if dash_left <= 0.0:
+			if "Scorched Trail" in deck:
+				create_fire(position_in_arena)
+			if "Landing Bell" in deck:
+				strike(position_in_arena, facing, 75.0, -1.0, 0, 0.0, 1.3)
 	else:
 		face_direction(direction)
 		position_in_arena += direction * 226.0 * delta
@@ -284,7 +275,7 @@ func update_fight(delta: float) -> void:
 	update_hud()
 	if health <= 0 or beacon_health <= 0:
 		finish_run(false)
-	elif stage == 1 and elapsed >= 24.0:
+	elif stage == 1 and (elapsed >= 24.0 or elapsed >= 12.0 and deck.is_empty()):
 		open_booster()
 	elif stage == 2 and (route == "bridge" and elapsed >= 23.0 or route == "road" and not enemies.any(func(enemy): return enemy.elite)):
 		finish_run(true)
@@ -296,11 +287,12 @@ func update_hud() -> void:
 	elif route == "road":
 		objective = "Defeat the road captain"
 	hud.text = "HP %d/30     /     Fight %d of 2     /     %s     /     %d defeated" % [health, stage, objective, kills]
-	notice.text = "WASD / arrows   ·   1–4 or click   ·   Hold Space to focus"
-	if focusing:
-		notice.text += "   ·   Focus active"
-	if cooldown > 0.0:
-		notice.text += "   ·   Recovering"
+	var status := PackedStringArray()
+	for index in range(CONTROLS.size()):
+		var recovery: float = cooldowns[index]
+		var suffix := " %.1fs" % recovery if recovery > 0 else ""
+		status.append("%s  %s%s" % [CONTROLS[index], ABILITIES[character][index], suffix])
+	notice.text = "     ·     ".join(status)
 
 func enemy_is_relevant(enemy: Dictionary) -> bool:
 	if enemy.hp <= 0 or enemy.elite:
@@ -355,7 +347,9 @@ func move_enemy(enemy: Dictionary, delta: float) -> void:
 		invulnerable = 0.65
 		if shield:
 			shield = false
-			perform_card("Shove")
+			strike(position_in_arena, facing, 95.0, -1.0, 2, 85.0, 0.9)
+			if "Beacon Oath" in deck:
+				health = mini(30, health + 4)
 		else:
 			health = maxi(0, health - (4 if enemy.elite else 2))
 			add_effect(position_in_arena, 28, Color("#ef746a"))
@@ -364,80 +358,80 @@ func move_enemy(enemy: Dictionary, delta: float) -> void:
 		enemy.attack = 1.0
 		add_effect(BEACON, 29, Color("#ef746a"))
 
-func nearest_enemy() -> Dictionary:
-	var nearest := {}
-	var distance := INF
-	for enemy in enemies:
-		var candidate: float = position_in_arena.distance_squared_to(enemy.pos)
-		if enemy.hp > 0 and candidate < distance:
-			distance = candidate
-			nearest = enemy
-	return nearest
-
-func play_card(index: int) -> void:
-	if phase != "fight" or cooldown > 0.0 or index < 0 or index >= hand.size():
+func use_ability(ability: int, aim: Vector2) -> void:
+	if phase != "fight" or cooldowns[ability] > 0.0:
 		return
-	var card := hand[index]
-	if card == "Aftershock" and last_attack.is_empty():
+	if ability == Ability.SPECIAL and not player_is_warden and last_attack == -1:
 		return
-	if card in ["Strike", "Harpoon"] and nearest_enemy().is_empty():
-		return
-	draw_pile.push_back(card)
-	hand[index] = draw_pile.pop_front()
-	cooldown = 0.34
-	perform_card(card)
+	# Movement keeps its original direction even if you attack during the dash.
+	if dash_left <= 0.0:
+		face_direction(aim)
+	cooldowns[ability] = COOLDOWNS[character][ability]
+	match ability:
+		Ability.PRIMARY, Ability.SECONDARY:
+			perform_attack(ability, aim)
+			previous_attack = last_attack
+			last_attack = ability
+		Ability.MOVEMENT:
+			var direction := movement_input()
+			face_direction(direction if direction != Vector2.ZERO else aim)
+			dash_left = 0.15 if player_is_warden else 0.22
+			invulnerable = maxf(invulnerable, dash_left + (0.2 if player_is_warden else 0.05))
+			add_effect(position_in_arena, 32, Color("#91cbbb"))
+			if "Scorched Trail" in deck:
+				create_fire(position_in_arena)
+		Ability.SPECIAL:
+			if player_is_warden:
+				shield = true
+				add_effect(position_in_arena, 38, Color("#91cbbb"))
+			else:
+				perform_attack(last_attack, aim)
+				if "Double Echo" in deck and previous_attack >= 0 and previous_attack != last_attack:
+					perform_attack(previous_attack, aim)
 	remove_defeated()
-	refresh_hand()
+	update_hud()
 
-func perform_card(card: String) -> void:
-	if CARDS[card][0] == "ATTACK":
-		last_attack = card
-		if kindled:
-			kindled = false
-			create_fire()
-	match card:
-		"Strike", "Harpoon":
-			var enemy := nearest_enemy()
-			if not enemy.is_empty():
-				add_effect(enemy.pos, 24, Color("#f8c780"))
-				enemy.hp -= 3 if card == "Strike" else 2
-				if card == "Harpoon":
-					enemy.pos = enemy.pos.move_toward(position_in_arena, 145.0)
-					enemy.stagger = 0.55
-		"Sweep", "Shove", "Rally":
-			var radius := 195.0 if card == "Rally" else 88.0
-			add_effect(position_in_arena, radius, Color("#91cbbb") if card == "Rally" else Color("#f8c780"))
-			var healed := 0
-			for enemy in enemies:
-				var offset: Vector2 = enemy.pos - position_in_arena
-				if enemy.hp <= 0 or offset.length_squared() > radius * radius:
-					continue
-				match card:
-					"Sweep": enemy.hp -= 2
-					"Shove":
-						enemy.pos += offset.normalized() * 97.0
-						enemy.stagger = 1.5
-					"Rally":
-						if enemy.stagger > 0:
-							healed += 2
-			if card == "Rally":
-				health = mini(30, health + mini(6, healed))
-		"Dash":
-			face_direction(movement_input())
-			dash_left = 0.19
-			invulnerable = maxf(invulnerable, 0.24)
-			add_effect(position_in_arena, 35, Color("#91cbbb"))
-		"Aftershock":
-			perform_card(last_attack)
-		"Bulwark":
-			shield = true
-		"Kindle":
-			kindled = true
-		"Cinder Ring":
-			create_fire()
+func perform_attack(ability: int, aim: Vector2) -> void:
+	if player_is_warden:
+		if ability == Ability.PRIMARY:
+			var targets := strike(position_in_arena, aim, 78.0, 0.15, 3)
+			if "Crack the Line" in deck:
+				for enemy in targets:
+					if enemy.stagger > 0.0:
+						strike(enemy.pos, aim, 55.0, -1.0, 2, 0.0, 0.0, enemy)
+		else:
+			var targets := strike(position_in_arena, aim, 95.0, 0.3, 1, 72.0, 1.6)
+			if "Rebound" in deck:
+				for enemy in targets:
+					strike(enemy.pos, aim, 46.0, -1.0, 2, 0.0, 0.0, enemy)
+	elif ability == Ability.PRIMARY:
+		var targets := strike(position_in_arena, aim, 104.0, 0.48, 3)
+		if "Kindling" in deck and not targets.is_empty():
+			create_fire(targets[0].pos)
+	else:
+		var shove := -65.0 if "Undertow" in deck else 30.0
+		strike(position_in_arena, aim, 120.0, -1.0, 2, shove, 0.55)
 
-func create_fire() -> void:
-	fires.append({"pos": position_in_arena, "life": 2.0, "tick": 0.0})
+func strike(origin: Vector2, aim: Vector2, reach: float, arc: float, damage: int, knockback := 0.0, stagger := 0.0, excluded := {}) -> Array[Dictionary]:
+	var hits: Array[Dictionary] = []
+	for enemy in enemies:
+		var offset: Vector2 = enemy.pos - origin
+		if enemy.hp <= 0 or is_same(enemy, excluded) or offset.length_squared() > reach * reach:
+			continue
+		if offset != Vector2.ZERO and offset.normalized().dot(aim) < arc:
+			continue
+		enemy.hp -= damage
+		enemy.stagger = maxf(enemy.stagger, stagger)
+		var displacement := knockback
+		if knockback < 0.0:
+			displacement = -minf(-knockback, maxf(0.0, offset.length() - 20.0))
+		enemy.pos += offset.normalized() * displacement
+		hits.append(enemy)
+	add_effect(origin, reach, Color("#f8c780") if damage > 0 else Color("#91cbbb"), aim if arc > -1.0 else Vector2.ZERO, arc)
+	return hits
+
+func create_fire(point: Vector2) -> void:
+	fires.append({"pos": point, "life": 1.55, "tick": 0.0})
 
 func update_fires(delta: float) -> void:
 	for fire in fires:
@@ -456,19 +450,27 @@ func remove_defeated() -> void:
 	enemies = enemies.filter(func(enemy): return enemy.hp > 0)
 	kills += before - enemies.size()
 
-func add_effect(point: Vector2, radius: float, color: Color) -> void:
-	effects.append({"pos": point, "radius": radius, "color": color, "life": 0.27})
+func add_effect(point: Vector2, radius: float, color: Color, aim := Vector2.ZERO, arc := -1.0) -> void:
+	effects.append({"pos": point, "radius": radius, "color": color, "life": 0.27, "aim": aim, "arc": arc})
 
 func open_booster() -> void:
 	phase = "booster"
-	show_menu("Open the cache", "Choose one card to add to your deck.")
-	var pack := BOOSTERS.duplicate()
-	for index in range(3):
+	var current := "Your deck: " + ", ".join(deck) if not deck.is_empty() else "Your deck has no augments yet."
+	show_menu(character + " booster", "Choose one passive augment. It applies as soon as you return to combat.\n" + current)
+	var pool: Dictionary = AUGMENTS[character]
+	var pack := pool.keys().filter(func(card): return card not in deck)
+	for index in range(mini(3, pack.size())):
 		var card: String = pack.pop_at(rng.randi_range(0, pack.size() - 1))
-		add_option("%d   ·   %s   /   %s" % [index + 1, card, CARDS[card][1]], draft_card.bind(card))
+		add_option("%d   ·   %s   /   %s" % [index + 1, card, pool[card]], draft_card.bind(card))
 
 func draft_card(card: String) -> void:
-	draw_pile.push_front(card)
+	if phase != "booster" or not AUGMENTS[character].has(card) or card in deck:
+		return
+	deck.append(card)
+	if elapsed < 24.0:
+		phase = "fight"
+		overlay.hide()
+		return
 	phase = "story"
 	show_menu("The ferryman’s signal", "The ferryman needs the beacon lit to guide his boat through the fog. Raiders are already on the bank. An old road bypasses the crossing, but its captain bars the way.")
 	add_option("Stay at the crossing · defend the beacon", choose_route.bind("bridge"))
@@ -540,8 +542,8 @@ func draw_actor(art: Texture2D, feet: Vector2, height: float, looks_left: bool, 
 func draw_player(feet: Vector2) -> void:
 	var tint := Color("#9fccc8") if player_is_warden else Color.WHITE
 	draw_actor(PLAYER_ART, feet, 48.0, player_looks_left, tint)
-	if shield or kindled:
-		draw_arc(feet, 21.0, 0, TAU, 24, Color("#91cbbb") if shield else Color("#e78a55"), 2.0)
+	if shield:
+		draw_arc(feet, 21.0, 0, TAU, 24, Color("#91cbbb"), 2.0)
 
 func draw_enemy(enemy: Dictionary, feet: Vector2) -> void:
 	var height := 57.0 if enemy.elite else 38.0
@@ -596,7 +598,9 @@ func _draw() -> void:
 	for effect in effects:
 		var color: Color = effect.color
 		color.a = effect.life / 0.27
-		draw_circle(effect.pos - offset, effect.radius * (1.0 - effect.life), color, false, 3.0)
+		var half_arc: float = PI if effect.aim == Vector2.ZERO else acos(effect.arc)
+		var angle: float = effect.aim.angle()
+		draw_arc(effect.pos - offset, effect.radius * (1.0 - effect.life), angle - half_arc, angle + half_arc, 32, color, 3.0)
 	# Keep world effects out of the HUD margins.
 	draw_rect(Rect2(0, 0, 1120, FIELD.position.y), Color("#111018"))
 	draw_rect(Rect2(0, FIELD.end.y, 1120, 720 - FIELD.end.y), Color("#111018"))
