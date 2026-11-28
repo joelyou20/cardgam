@@ -3,8 +3,9 @@
 Cardgam is a Godot 4.7 prototype for a real-time arena deckbuilder. Import
 `main/project.godot` in Godot and press F5, or run `godot --headless --path main --import` once, then `godot --path main`.
 
-- Move with WASD or the arrow keys.
-- Play with 1–4 or click a card. Its slot refills from the draw pile and the
+- Move with WASD or the arrow keys. The isometric terrain scrolls continuously.
+- Play with 1–4 or click a card below your character. Hold Space to slow
+  combat and expand the hand descriptions. A played slot refills from the draw pile and the
   played card goes to the back of the cycle. Attacks with single targets aim
   at the nearest enemy.
 - Survive the first fight, draft one card from a three-card booster, and choose
