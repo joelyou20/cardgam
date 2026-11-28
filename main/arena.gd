@@ -1,5 +1,9 @@
 extends Node2D
 
+const PLAYER_ART := preload("res://art/vanguard.png")
+const ENEMY_ART := preload("res://art/raider.png")
+const TERRAIN_ART := preload("res://art/terrain.png")
+const TILE_SIZE := Vector2(64, 32)
 const FIELD := Rect2(24, 80, 1072, 477)
 const BEACON := Vector2(560, 300)
 const STARTER := ["Strike", "Sweep", "Dash", "Shove"]
@@ -20,6 +24,9 @@ const CARDS := {
 var phase := "title"
 var position_in_arena := BEACON
 var facing := Vector2.RIGHT
+var player_looks_left := false
+var player_is_warden := false
+var terrain_tiles: Array[Dictionary] = []
 var dash_left := 0.0
 var health := 30
 var beacon_health := 12
@@ -50,6 +57,8 @@ var options: VBoxContainer
 
 func _ready() -> void:
 	rng.randomize()
+	texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	build_terrain()
 	load_progress()
 	build_interface()
 	show_title()
@@ -139,6 +148,7 @@ func add_option(label: String, action: Callable) -> void:
 	options.add_child(button)
 
 func show_title() -> void:
+	player_is_warden = false
 	phase = "title"
 	hand.clear()
 	enemies.clear()
@@ -165,6 +175,7 @@ func unlock_warden() -> void:
 	show_title()
 
 func start_run(special: String) -> void:
+	player_is_warden = special == "Bulwark"
 	hand.assign(STARTER)
 	draw_pile.assign([special])
 	health = 30
@@ -180,6 +191,7 @@ func begin_fight() -> void:
 	phase = "fight"
 	position_in_arena = BEACON + Vector2(0, 85) if route == "bridge" else BEACON
 	facing = Vector2.RIGHT
+	player_looks_left = false
 	enemies.clear()
 	fires.clear()
 	effects.clear()
@@ -227,6 +239,12 @@ func movement_input() -> Vector2:
 	direction.y = float(Input.is_key_pressed(KEY_S) or Input.is_key_pressed(KEY_DOWN)) - float(Input.is_key_pressed(KEY_W) or Input.is_key_pressed(KEY_UP))
 	return direction.normalized()
 
+func face_direction(direction: Vector2) -> void:
+	if direction != Vector2.ZERO:
+		facing = direction
+	if not is_zero_approx(direction.x):
+		player_looks_left = direction.x < 0.0
+
 func update_fight(delta: float) -> void:
 	elapsed += delta
 	cooldown = maxf(0.0, cooldown - delta)
@@ -236,8 +254,7 @@ func update_fight(delta: float) -> void:
 		dash_left -= delta
 		position_in_arena += facing * 690.0 * delta
 	else:
-		if direction != Vector2.ZERO:
-			facing = direction
+		face_direction(direction)
 		position_in_arena += direction * 226.0 * delta
 	position_in_arena = clamp_to_field(position_in_arena)
 	spawn_left -= delta
@@ -288,6 +305,7 @@ func spawn_enemy(elite := false) -> void:
 		"stagger": 0.0,
 		"attack": 0.0,
 		"elite": elite,
+		"looks_left": point.x > position_in_arena.x,
 		"raider": route == "bridge" and rng.randf() < 0.52,
 	})
 
@@ -300,6 +318,8 @@ func move_enemy(enemy: Dictionary, delta: float) -> void:
 		return
 	var target := BEACON if enemy.raider else position_in_arena
 	var offset: Vector2 = target - enemy.pos
+	if absf(offset.x) > 1.0:
+		enemy.looks_left = offset.x < 0.0
 	var contact := 30.0 if enemy.elite else 21.0
 	if offset.length() > contact:
 		enemy.pos += offset.normalized() * enemy.speed * delta
@@ -379,9 +399,7 @@ func perform_card(card: String) -> void:
 			if card == "Rally":
 				health = mini(30, health + mini(6, healed))
 		"Dash":
-			var direction := movement_input()
-			if direction != Vector2.ZERO:
-				facing = direction
+			face_direction(movement_input())
 			dash_left = 0.19
 			invulnerable = maxf(invulnerable, 0.24)
 			add_effect(position_in_arena, 35, Color("#91cbbb"))
@@ -462,12 +480,59 @@ func save_progress() -> void:
 	if save.save("user://progress.cfg") != OK:
 		push_warning("Could not save run progress.")
 
+func build_terrain() -> void:
+	# Offset each half-height row by half a tile to form a 2:1 diamond grid.
+	var row_count := ceili(FIELD.size.y / (TILE_SIZE.y / 2.0))
+	var column_count := ceili(FIELD.size.x / TILE_SIZE.x)
+	for row in range(-1, row_count):
+		for column in range(-1, column_count):
+			var offset := Vector2(column * TILE_SIZE.x + posmod(row, 2) * TILE_SIZE.x / 2.0, row * TILE_SIZE.y / 2.0)
+			var tile := Rect2(FIELD.position + offset, TILE_SIZE)
+			var clipped := FIELD.intersection(tile)
+			if not clipped.has_area():
+				continue
+			var pattern := posmod(column * 73 + row * 37 + column * row * 17, 23)
+			var variant := 0
+			if pattern >= 13:
+				variant = 1 + (pattern - 13) % 3
+			var source := Rect2(clipped.position - tile.position + Vector2(variant * TILE_SIZE.x, 0), clipped.size)
+			terrain_tiles.append({"destination": clipped, "source": source})
+
+func draw_actor(art: Texture2D, feet: Vector2, height: float, looks_left: bool, tint: Color) -> void:
+	feet = feet.round()
+	var width := roundf(height * art.get_width() / art.get_height())
+	var shadow := PackedVector2Array()
+	for index in range(16):
+		shadow.append(feet + Vector2.from_angle(TAU * index / 16.0) * Vector2(width * 0.31, 4))
+	draw_colored_polygon(shadow, Color(0.06, 0.055, 0.075, 0.62))
+	draw_set_transform(feet, 0.0, Vector2(-1, 1) if looks_left else Vector2.ONE)
+	draw_texture_rect(art, Rect2(-width / 2.0, -height, width, height), false, tint)
+	draw_set_transform(Vector2.ZERO)
+
+func draw_player() -> void:
+	var tint := Color("#9fccc8") if player_is_warden else Color.WHITE
+	draw_actor(PLAYER_ART, position_in_arena, 48.0, player_looks_left, tint)
+	if shield or kindled:
+		draw_arc(position_in_arena, 21.0, 0, TAU, 24, Color("#91cbbb") if shield else Color("#e78a55"), 2.0)
+
+func draw_enemy(enemy: Dictionary) -> void:
+	var height := 57.0 if enemy.elite else 38.0
+	var tint := Color("#e2bbf6") if enemy.elite else Color.WHITE
+	if enemy.raider:
+		tint = Color("#ffbe88")
+	if enemy.stagger > 0.0:
+		tint = Color("#91a5bd")
+	draw_actor(ENEMY_ART, enemy.pos, height, enemy.looks_left, tint)
+	if enemy.elite:
+		var bar: Vector2 = enemy.pos + Vector2(-22, -height - 7)
+		draw_rect(Rect2(bar, Vector2(44, 4)), Color("#432b38"))
+		draw_rect(Rect2(bar, Vector2(44.0 * enemy.hp / 24.0, 4)), Color("#f8af88"))
+
 func _draw() -> void:
 	draw_rect(Rect2(0, 0, 1120, 720), Color("#111018"))
-	draw_rect(FIELD, Color("#222430"))
-	for x in range(40, 1096, 32):
-		for y in range(96, 557, 32):
-			draw_circle(Vector2(x, y), 1.0, Color("#3d3c4c"))
+	draw_rect(FIELD, Color("#2a3035"))
+	for tile in terrain_tiles:
+		draw_texture_rect_region(TERRAIN_ART, tile.destination, tile.source)
 	draw_rect(FIELD, Color("#615164"), false, 2.0)
 	if route == "bridge":
 		draw_circle(BEACON, 29.0, Color("#ffc778"), false, 2.0)
@@ -475,21 +540,16 @@ func _draw() -> void:
 	for fire in fires:
 		draw_circle(fire.pos, 72.0, Color(0.96, 0.38, 0.19, 0.19))
 		draw_circle(fire.pos, 72.0, Color("#dc764d"), false, 2.0)
-	for enemy in enemies:
-		var radius := 17.0 if enemy.elite else 10.0
-		var tint := Color("#bd7964") if enemy.raider else Color("#b76582")
-		if enemy.stagger > 0.0:
-			tint = Color("#8c869d")
-		draw_circle(enemy.pos, radius + 3.0, Color("#16141f"))
-		draw_circle(enemy.pos, radius, tint)
-		if enemy.elite:
-			draw_rect(Rect2(enemy.pos + Vector2(-22, -28), Vector2(44, 4)), Color("#432b38"))
-			draw_rect(Rect2(enemy.pos + Vector2(-22, -28), Vector2(44.0 * enemy.hp / 24.0, 4)), Color("#f8af88"))
-	draw_circle(position_in_arena, 15.0, Color("#181825"))
-	draw_circle(position_in_arena, 11.0, Color("#f3c887"))
-	draw_line(position_in_arena, position_in_arena + facing * 18.0, Color("#fff0d1"), 3.0, true)
-	if shield or kindled:
-		draw_circle(position_in_arena, 21.0, Color("#91cbbb") if shield else Color("#e78a55"), false, 2.0)
+	var actors := enemies.duplicate()
+	actors.sort_custom(func(a, b): return a.pos.y < b.pos.y)
+	var player_drawn := false
+	for enemy in actors:
+		if not player_drawn and enemy.pos.y >= position_in_arena.y:
+			draw_player()
+			player_drawn = true
+		draw_enemy(enemy)
+	if not player_drawn:
+		draw_player()
 	for effect in effects:
 		var color: Color = effect.color
 		color.a = effect.life / 0.27
