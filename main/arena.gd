@@ -97,6 +97,7 @@ func build_interface() -> void:
 		slots.append(button)
 	overlay = PanelContainer.new()
 	overlay.position = Vector2(245, 115)
+	overlay.custom_minimum_size.x = 630
 	overlay.size = Vector2(630, 0)
 	overlay.theme = theme
 	var panel := StyleBoxFlat.new()
@@ -126,7 +127,7 @@ func show_menu(title: String, description: String) -> void:
 	detail.text = description
 	detail.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	options.add_child(detail)
-	overlay.size = Vector2(630, 0)
+	overlay.set_deferred("size", Vector2(630, 0))
 	refresh_hand()
 
 func add_option(label: String, action: Callable) -> void:
