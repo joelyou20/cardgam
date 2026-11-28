@@ -1,6 +1,14 @@
 extends Node2D
 
 const FrontMenu := preload("res://front_menu.gd")
+const MAX_HEALTH := 30
+const CRIT_CHANCE := 0.10
+const HIT_FLASH_TIME := 0.18
+const DAMAGE_NUMBER_TIME := 0.78
+const HIT_RED := Color("#ff333b")
+const HP_FILL := Color("#d45455")
+const HP_TRACK := Color("#301d28")
+const HP_BORDER := Color("#a27869")
 const WARDEN_COST := 3
 const GIER_KILLS := 30
 const XOLA_DRAFTS := 4
@@ -87,7 +95,9 @@ var facing := Vector2.RIGHT
 var player_looks_left := false
 var player_is_warden := false
 var dash_left := 0.0
-var health := 30
+var health := MAX_HEALTH
+var player_flash_until := 0.0
+var player_hit_color := HIT_RED
 var beacon_health := 12
 var invulnerable := 0.0
 var shield := false
@@ -112,7 +122,12 @@ var enemies: Array[Dictionary] = []
 var effects: Array[Dictionary] = []
 var fires: Array[Dictionary] = []
 var rng := RandomNumberGenerator.new()
+var crit_rng := RandomNumberGenerator.new()
+var damage_numbers: Array[Dictionary] = []
+var flash_masks := {}
 
+var health_bar: ProgressBar
+var health_text: Label
 var front_menu: Control
 var hud: Label
 var notice: Label
@@ -121,6 +136,8 @@ var options: VBoxContainer
 
 func _ready() -> void:
 	rng.randomize()
+	crit_rng.randomize()
+	build_flash_masks()
 	texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 	load_progress()
 	build_interface()
@@ -153,6 +170,7 @@ func build_interface() -> void:
 	notice.position = Vector2(28, 48)
 	notice.modulate = Color("#bdb3a9")
 	layer.add_child(notice)
+	build_health_bar(layer)
 	overlay = PanelContainer.new()
 	overlay.position = Vector2(245, 115)
 	overlay.custom_minimum_size.x = 630
@@ -173,7 +191,43 @@ func build_interface() -> void:
 	front_menu = FrontMenu.new(self, theme)
 	layer.add_child(front_menu)
 
+func build_health_bar(layer: CanvasLayer) -> void:
+	health_bar = ProgressBar.new()
+	layer.add_child(health_bar)
+	health_bar.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM)
+	health_bar.offset_left = -202
+	health_bar.offset_right = 202
+	health_bar.offset_top = -58
+	health_bar.offset_bottom = -24
+	health_bar.max_value = MAX_HEALTH
+	health_bar.show_percentage = false
+	health_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var track := StyleBoxFlat.new()
+	track.bg_color = HP_TRACK
+	track.border_color = HP_BORDER
+	track.set_border_width_all(2)
+	track.set_corner_radius_all(4)
+	var fill := StyleBoxFlat.new()
+	fill.bg_color = HP_FILL
+	fill.set_corner_radius_all(3)
+	health_bar.add_theme_stylebox_override("background", track)
+	health_bar.add_theme_stylebox_override("fill", fill)
+	health_text = Label.new()
+	health_text.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	health_text.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	health_text.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	health_text.add_theme_color_override("font_outline_color", Color("#210f19"))
+	health_text.add_theme_constant_override("outline_size", 5)
+	health_text.add_theme_font_size_override("font_size", 18)
+	health_bar.add_child(health_text)
+	health_text.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+
+func update_health_display() -> void:
+	health_bar.value = health
+	health_text.text = "%d / %d HP" % [health, MAX_HEALTH]
+
 func show_menu(title: String, description: String) -> void:
+	health_bar.hide()
 	for child in options.get_children():
 		options.remove_child(child)
 		child.queue_free()
@@ -205,6 +259,9 @@ func open_front_page(page: String) -> void:
 	character = "Vanguard"
 	hero = HeroActions.new(self)
 	phase = "title"
+	health_bar.hide()
+	damage_numbers.clear()
+	player_flash_until = 0.0
 	deck.clear()
 	enemies.clear()
 	fires.clear()
@@ -256,7 +313,7 @@ func start_run(chosen_character: String) -> void:
 	player_is_warden = character == "Warden"
 	deck.clear()
 	run_unlocks.clear()
-	health = 30
+	health = MAX_HEALTH
 	kills = 0
 	stage = 1
 	route = ""
@@ -280,10 +337,14 @@ func begin_fight() -> void:
 	previous_attack = -1
 	shield = false
 	elapsed = 0.0
+	damage_numbers.clear()
+	player_flash_until = 0.0
 	spawn_left = 0.2
 	if route == "road":
 		spawn_enemy(true)
 	overlay.hide()
+	health_bar.show()
+	update_hud()
 
 func _unhandled_input(event: InputEvent) -> void:
 	var ability := -1
@@ -328,6 +389,7 @@ func face_direction(direction: Vector2) -> void:
 
 func update_fight(delta: float) -> void:
 	elapsed += delta
+	damage_numbers = damage_numbers.filter(func(number): return elapsed - number.time < DAMAGE_NUMBER_TIME)
 	for index in range(cooldowns.size()):
 		cooldowns[index] = maxf(0.0, cooldowns[index] - delta)
 	invulnerable = maxf(0.0, invulnerable - delta)
@@ -372,7 +434,8 @@ func update_hud() -> void:
 		objective = "Protect the beacon · %d/12 · %ds" % [beacon_health, maxi(0, ceili(23.0 - elapsed))]
 	elif route == "road":
 		objective = "Defeat the road captain"
-	hud.text = "HP %d/30     /     Fight %d of 2     /     %s     /     %d defeated" % [health, stage, objective, kills]
+	hud.text = "Fight %d of 2     /     %s     /     %d defeated" % [stage, objective, kills]
+	update_health_display()
 	var status := PackedStringArray()
 	for index in range(CONTROLS.size()):
 		var recovery: float = cooldowns[index]
@@ -445,10 +508,9 @@ func move_enemy(enemy: Dictionary, delta: float) -> void:
 			shield = false
 			strike(position_in_arena, facing, 95.0, -1.0, 2, 85.0, 0.9)
 			if "Beacon Oath" in deck:
-				health = mini(30, health + 4)
+				heal_player(4)
 		else:
-			health = maxi(0, health - (4 if enemy.elite else 2))
-			hero.hidden = 0.0
+			damage_player(2, enemy.elite)
 			add_effect(position_in_arena, 28, Color("#ef746a"))
 	elif enemy.raider and ally.is_empty() and offset.length() <= contact:
 		beacon_health = maxi(0, beacon_health - 1)
@@ -514,6 +576,34 @@ func perform_attack(ability: int, aim: Vector2) -> void:
 		var shove := -65.0 if "Undertow" in deck else 30.0
 		strike(position_in_arena, aim, 120.0, -1.0, 2, shove, 0.55)
 
+func damage_enemy(enemy: Dictionary, base_damage: int) -> void:
+	if base_damage <= 0 or enemy.hp <= 0:
+		return
+	var critical := crit_rng.randf() < CRIT_CHANCE
+	var damage := base_damage * (2 if critical else 1)
+	enemy.hp = maxi(0, enemy.hp - damage)
+	var tint := Color.WHITE if critical else HIT_RED
+	if critical or elapsed >= enemy.get("flash_until", 0.0) or enemy.get("hit_color", HIT_RED) != Color.WHITE:
+		enemy.hit_color = tint
+		enemy.flash_until = elapsed + HIT_FLASH_TIME
+	var height := 57.0 if enemy.elite else 38.0
+	var drift := float(posmod(enemy.id + damage_numbers.size() * 7, 19) - 9)
+	damage_numbers.append({"pos": enemy.pos - Vector2(0, height + 11), "time": elapsed, "damage": damage, "critical": critical, "drift": drift})
+
+func damage_player(base_damage: int, critical: bool) -> void:
+	if base_damage <= 0 or health <= 0:
+		return
+	health = maxi(0, health - base_damage * (2 if critical else 1))
+	hero.hidden = 0.0
+	if critical or elapsed >= player_flash_until or player_hit_color != Color.WHITE:
+		player_hit_color = Color.WHITE if critical else HIT_RED
+		player_flash_until = elapsed + HIT_FLASH_TIME
+	update_health_display()
+
+func heal_player(amount: int) -> void:
+	health = mini(MAX_HEALTH, health + amount)
+	update_health_display()
+
 func strike(origin: Vector2, aim: Vector2, reach: float, arc: float, damage: int, knockback := 0.0, stagger := 0.0, excluded := {}) -> Array[Dictionary]:
 	var hits: Array[Dictionary] = []
 	for enemy in enemies:
@@ -522,7 +612,7 @@ func strike(origin: Vector2, aim: Vector2, reach: float, arc: float, damage: int
 			continue
 		if offset != Vector2.ZERO and offset.normalized().dot(aim) < arc:
 			continue
-		enemy.hp -= damage
+		damage_enemy(enemy, damage)
 		enemy.stagger = maxf(enemy.stagger, stagger)
 		var displacement := knockback
 		if knockback < 0.0:
@@ -544,7 +634,7 @@ func update_fires(delta: float) -> void:
 		fire.tick = 0.45
 		for enemy in enemies:
 			if fire.pos.distance_squared_to(enemy.pos) <= 72.0 * 72.0:
-				enemy.hp -= 1
+				damage_enemy(enemy, 1)
 	fires = fires.filter(func(fire): return fire.life > 0)
 
 func remove_defeated() -> void:
@@ -576,6 +666,7 @@ func draft_card(card: String) -> void:
 	if elapsed < 24.0:
 		phase = "fight"
 		overlay.hide()
+		health_bar.show()
 		return
 	phase = "story"
 	show_menu("The ferryman’s signal", "The ferryman needs the beacon lit to guide his boat through the fog. Raiders are already on the bank. An old road bypasses the crossing, but its captain bars the way.")
@@ -585,7 +676,7 @@ func draft_card(card: String) -> void:
 func choose_route(choice: String) -> void:
 	route = choice
 	stage = 2
-	health = mini(30, health + 8)
+	heal_player(8)
 	begin_fight()
 
 func finish_run(won: bool) -> void:
@@ -657,7 +748,44 @@ func draw_terrain(offset: Vector2) -> void:
 			var source := Rect2(clipped.position - tile.position + Vector2(variant * TILE_SIZE.x, 0), clipped.size)
 			draw_texture_rect_region(TERRAIN_ART, Rect2(clipped.position - offset, clipped.size), source)
 
-func draw_actor(art: Texture2D, feet: Vector2, height: float, looks_left: bool, tint: Color) -> void:
+func build_flash_masks() -> void:
+	var textures := HERO_ART.values()
+	textures.append(PLAYER_ART)
+	textures.append(ENEMY_ART)
+	for art in textures:
+		var source: Image = art.get_image()
+		var mask := Image.create_empty(source.get_width(), source.get_height(), false, Image.FORMAT_RGBA8)
+		for y in range(source.get_height()):
+			for x in range(source.get_width()):
+				mask.set_pixel(x, y, Color(1.0, 1.0, 1.0, source.get_pixel(x, y).a))
+		flash_masks[art] = ImageTexture.create_from_image(mask)
+
+func draw_health_above_player(feet: Vector2) -> void:
+	var bar := Rect2(feet - Vector2(28, 48 + hero.lift + 12), Vector2(56, 7))
+	draw_rect(bar, HP_BORDER)
+	var track := bar.grow(-1)
+	draw_rect(track, HP_TRACK)
+	track.size.x *= float(health) / MAX_HEALTH
+	if track.has_area():
+		draw_rect(track, HP_FILL)
+
+func draw_damage_numbers(offset: Vector2) -> void:
+	var font := ThemeDB.fallback_font
+	for number in damage_numbers:
+		var progress := clampf((elapsed - number.time) / DAMAGE_NUMBER_TIME, 0.0, 1.0)
+		var point: Vector2 = number.pos - offset + Vector2(number.drift * progress, -35.0 * ease(progress, 0.65))
+		if not FIELD.grow(24.0).has_point(point):
+			continue
+		var text := str(number.damage)
+		var font_size := 25 if number.critical else 18
+		var alpha := 1.0 - smoothstep(0.48, 1.0, progress)
+		var color := Color.WHITE if number.critical else Color("#ffd696")
+		color.a = alpha
+		point.x -= font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x / 2.0
+		draw_string_outline(font, point, text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, 6 if number.critical else 4, Color(0.08, 0.05, 0.08, alpha))
+		draw_string(font, point, text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, color)
+
+func draw_actor(art: Texture2D, feet: Vector2, height: float, looks_left: bool, tint: Color, flash := Color.TRANSPARENT, flash_until := 0.0) -> void:
 	feet = feet.round()
 	var width := roundf(height * art.get_width() / art.get_height())
 	var shadow := PackedVector2Array()
@@ -665,7 +793,11 @@ func draw_actor(art: Texture2D, feet: Vector2, height: float, looks_left: bool, 
 		shadow.append(feet + Vector2.from_angle(TAU * index / 16.0) * Vector2(width * 0.31, 4))
 	draw_colored_polygon(shadow, Color(0.06, 0.055, 0.075, 0.62))
 	draw_set_transform(feet, 0.0, Vector2(-1, 1) if looks_left else Vector2.ONE)
-	draw_texture_rect(art, Rect2(-width / 2.0, -height, width, height), false, tint)
+	var bounds := Rect2(-width / 2.0, -height, width, height)
+	draw_texture_rect(art, bounds, false, tint)
+	if flash_until > elapsed:
+		flash.a = smoothstep(0.0, HIT_FLASH_TIME * 0.65, flash_until - elapsed)
+		draw_texture_rect(flash_masks[art], bounds, false, flash)
 	draw_set_transform(Vector2.ZERO)
 
 func draw_player(feet: Vector2) -> void:
@@ -678,7 +810,7 @@ func draw_player(feet: Vector2) -> void:
 		looks_left = fmod(hero.spin * 11.0, 2.0) > 1.0
 		var angle := hero.spin * -14.0
 		draw_arc(feet, 56.0, angle, angle + PI * 1.45, 32, Color("#ef9f57"), 4.0, true)
-	draw_actor(art, feet - Vector2(0, hero.lift), 48.0, looks_left, tint)
+	draw_actor(art, feet - Vector2(0, hero.lift), 48.0, looks_left, tint, player_hit_color, player_flash_until)
 	if shield:
 		draw_arc(feet, 21.0, 0, TAU, 24, Color("#91cbbb"), 2.0)
 
@@ -689,7 +821,7 @@ func draw_enemy(enemy: Dictionary, feet: Vector2) -> void:
 		tint = Color("#ffbe88")
 	if enemy.stagger > 0.0:
 		tint = Color("#91a5bd")
-	draw_actor(ENEMY_ART, feet, height, enemy.looks_left, tint)
+	draw_actor(ENEMY_ART, feet, height, enemy.looks_left, tint, enemy.get("hit_color", HIT_RED), enemy.get("flash_until", 0.0))
 	if enemy.elite:
 		var bar := feet + Vector2(-22, -height - 7)
 		draw_rect(Rect2(bar, Vector2(44, 4)), Color("#432b38"))
@@ -739,6 +871,9 @@ func _draw() -> void:
 		var half_arc: float = PI if effect.aim == Vector2.ZERO else acos(effect.arc)
 		var angle: float = effect.aim.angle()
 		draw_arc(effect.pos - offset, effect.radius * (1.0 - effect.life), angle - half_arc, angle + half_arc, 32, color, 3.0)
+	draw_damage_numbers(offset)
+	if phase == "fight":
+		draw_health_above_player(SCREEN_CENTER)
 	# Keep world effects out of the HUD margins.
 	draw_rect(Rect2(0, 0, 1120, FIELD.position.y), Color("#111018"))
 	draw_rect(Rect2(0, FIELD.end.y, 1120, 720 - FIELD.end.y), Color("#111018"))

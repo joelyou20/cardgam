@@ -84,7 +84,7 @@ func cast(slot: int, aim: Vector2, target: Vector2) -> void:
 				0:
 					var hits: Array = arena.strike(origin, aim, 93.0, 0.45, 2)
 					var heal := mini(hits.size(), 3) * (2 if has_card("Blood Tithe") else 1)
-					arena.health = mini(30, arena.health + heal)
+					arena.heal_player(heal)
 				1:
 					for enemy in arena.strike(cursor, aim, 87.0, -1.0, 6):
 						if enemy.hp <= 0:
@@ -121,7 +121,7 @@ func line_hit(start: Vector2, end: Vector2, width: float, damage: int, push: flo
 		if nearest.distance_squared_to(enemy.pos) > width * width:
 			continue
 		hits.append(enemy.id)
-		enemy.hp -= damage
+		arena.damage_enemy(enemy, damage)
 		enemy.stagger = maxf(enemy.stagger, stun)
 		enemy.pos += (end - start).normalized() * push
 	if color.a > 0.0:
@@ -234,7 +234,7 @@ func update_summons(delta: float) -> void:
 			ally.pos = ally.pos.move_toward(target.pos, 215.0 * delta)
 		elif ally.tick <= 0.0:
 			ally.tick = 0.48 if has_card("Frenzied Bones") else 0.7
-			target.hp -= 2
+			arena.damage_enemy(target, 2)
 			arena.add_effect(target.pos, 24.0, GREEN)
 	summons = summons.filter(func(ally): return ally.hp > 0 and ally.life > 0.0)
 

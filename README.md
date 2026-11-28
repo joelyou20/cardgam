@@ -9,6 +9,9 @@ Cardgam is a Godot 4.7 prototype for a real-time arena battler. Import
 - Left click attacks, right click uses the secondary attack, Space uses the
   movement ability, and R uses the special. Movement follows your movement
   keys, or the mouse if you aren't holding a direction.
+- Player-side damage has a 10% chance to crit for double damage. The road
+  captain's heavy hits count as critical hits. Sprites flash red on regular
+  hits and white on crits, and enemy damage numbers float up from the target.
 - Each character has four fixed abilities and its own pool of passive cards.
   Draft one augment from each booster to build your deck for the current run.
   Drafted augments take effect automatically.
