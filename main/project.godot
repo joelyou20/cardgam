@@ -10,11 +10,15 @@ config_version=5
 
 [application]
 
-config/name="Main"
-config/features=PackedStringArray("4.7", "Mobile")
+config/name="Cardgam"
+run/main_scene="res://arena.tscn"
+config/features=PackedStringArray("4.7", "GL Compatibility")
 config/icon="res://icon.svg"
 
 [display]
+
+window/size/viewport_width=1120
+window/size/viewport_height=720
 
 window/stretch/mode="canvas_items"
 window/stretch/aspect="expand"
@@ -25,5 +29,4 @@ window/stretch/aspect="expand"
 
 [rendering]
 
-rendering_device/driver.windows="d3d12"
-renderer/rendering_method="mobile"
+renderer/rendering_method="gl_compatibility"
