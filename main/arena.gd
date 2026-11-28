@@ -1,5 +1,10 @@
 extends Node2D
 
+const FrontMenu := preload("res://front_menu.gd")
+const WARDEN_COST := 3
+const GIER_KILLS := 30
+const XOLA_DRAFTS := 4
+
 const HeroActions := preload("res://hero_actions.gd")
 const HERO_ART := {
 	"Gier": preload("res://art/gier.png"),
@@ -94,6 +99,11 @@ var stage := 1
 var route := ""
 var embers := 0
 var warden_unlocked := false
+var total_kills := 0
+var total_drafts := 0
+var crossing_won := false
+var captain_defeated := false
+var run_unlocks: Array[String] = []
 var character := "Vanguard"
 var last_attack := -1
 var previous_attack := -1
@@ -103,6 +113,7 @@ var effects: Array[Dictionary] = []
 var fires: Array[Dictionary] = []
 var rng := RandomNumberGenerator.new()
 
+var front_menu: Control
 var hud: Label
 var notice: Label
 var overlay: PanelContainer
@@ -159,6 +170,8 @@ func build_interface() -> void:
 	options = VBoxContainer.new()
 	options.add_theme_constant_override("separation", 12)
 	overlay.add_child(options)
+	front_menu = FrontMenu.new(self, theme)
+	layer.add_child(front_menu)
 
 func show_menu(title: String, description: String) -> void:
 	for child in options.get_children():
@@ -179,12 +192,15 @@ func show_menu(title: String, description: String) -> void:
 func add_option(label: String, action: Callable) -> void:
 	var button := Button.new()
 	button.text = label
-	button.custom_minimum_size.y = 42 if phase == "title" else 50
+	button.custom_minimum_size.y = 50
 	button.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	button.pressed.connect(action)
 	options.add_child(button)
 
 func show_title() -> void:
+	open_front_page("home")
+
+func open_front_page(page: String) -> void:
 	player_is_warden = false
 	character = "Vanguard"
 	hero = HeroActions.new(self)
@@ -197,28 +213,49 @@ func show_title() -> void:
 	position_in_arena = BEACON
 	hud.text = ""
 	notice.text = ""
-	show_menu("Cardgam", "WASD or arrows to move · Mouse to aim\nLeft / right click to attack · Space to move · R for special\nEmbers: %d" % embers)
-	add_option("Vanguard", start_run.bind("Vanguard"))
-	if warden_unlocked:
-		add_option("Warden", start_run.bind("Warden"))
-	elif embers >= 3:
-		add_option("Unlock Warden · 3 embers", unlock_warden)
-	else:
-		add_option("Warden · unlocks for 3 embers", func(): pass)
-		(options.get_child(-1) as Button).disabled = true
-	for name in HERO_ART:
-		add_option(name, start_run.bind(name))
+	overlay.hide()
+	front_menu.show_page(page)
+
+func is_character_unlocked(name: String) -> bool:
+	match name:
+		"Vanguard": return true
+		"Warden": return warden_unlocked
+		"Gier": return total_kills >= GIER_KILLS
+		"Moonrose": return crossing_won
+		"Xola Kain": return total_drafts >= XOLA_DRAFTS
+		"The Necroblade": return captain_defeated
+	return false
+
+func unlock_info(name: String) -> Dictionary:
+	match name:
+		"Warden":
+			return {"requirement": "Spend %d embers." % WARDEN_COST, "progress": "%d / %d embers" % [mini(embers, WARDEN_COST), WARDEN_COST]}
+		"Gier":
+			return {"requirement": "Defeat %d enemies across finished runs." % GIER_KILLS, "progress": "%d / %d enemies" % [mini(total_kills, GIER_KILLS), GIER_KILLS]}
+		"Moonrose":
+			return {"requirement": "Win the crossing fight with the beacon intact.", "progress": "Crossing pending"}
+		"Xola Kain":
+			return {"requirement": "Draft %d augment cards across runs." % XOLA_DRAFTS, "progress": "%d / %d augments" % [mini(total_drafts, XOLA_DRAFTS), XOLA_DRAFTS]}
+		"The Necroblade":
+			return {"requirement": "Defeat the road captain on the old road.", "progress": "Captain pending"}
+	return {"requirement": "Available from the start.", "progress": ""}
 
 func unlock_warden() -> void:
-	embers -= 3
+	if warden_unlocked or embers < WARDEN_COST:
+		return
+	embers -= WARDEN_COST
 	warden_unlocked = true
 	save_progress()
-	show_title()
+	front_menu.show_page("unlocks")
 
 func start_run(chosen_character: String) -> void:
+	if phase != "title" or not is_character_unlocked(chosen_character):
+		return
+	front_menu.hide()
 	character = chosen_character
 	player_is_warden = character == "Warden"
 	deck.clear()
+	run_unlocks.clear()
 	health = 30
 	kills = 0
 	stage = 1
@@ -532,6 +569,10 @@ func draft_card(card: String) -> void:
 	if phase != "booster" or not AUGMENTS[character].has(card) or card in deck:
 		return
 	deck.append(card)
+	total_drafts += 1
+	if total_drafts == XOLA_DRAFTS:
+		run_unlocks.append("Xola Kain")
+	save_progress()
 	if elapsed < 24.0:
 		phase = "fight"
 		overlay.hide()
@@ -548,26 +589,49 @@ func choose_route(choice: String) -> void:
 	begin_fight()
 
 func finish_run(won: bool) -> void:
+	if phase != "fight":
+		return
 	phase = "results"
 	var reward := 1 + int(stage == 2) + int(won)
 	embers += reward
+	if total_kills < GIER_KILLS and total_kills + kills >= GIER_KILLS:
+		run_unlocks.append("Gier")
+	total_kills += kills
+	if won and route == "bridge" and not crossing_won:
+		crossing_won = true
+		run_unlocks.append("Moonrose")
+	if won and route == "road" and not captain_defeated:
+		captain_defeated = true
+		run_unlocks.append("The Necroblade")
 	save_progress()
 	var outcome := "The boat made it through." if route == "bridge" else "The road is open."
 	if not won:
 		outcome = "The beacon went dark." if beacon_health <= 0 else "You fell before reaching safety."
-	show_menu(outcome, "%d foes defeated. You earned %d embers.\nTotal embers: %d." % [kills, reward, embers])
-	add_option("Return to character select", show_title)
+	var summary := "%d foes defeated. You earned %d embers.\nTotal embers: %d." % [kills, reward, embers]
+	if not run_unlocks.is_empty():
+		summary += "\n\nUnlocked: " + ", ".join(run_unlocks)
+	show_menu(outcome, summary)
+	add_option("Return to character select", open_front_page.bind("roster"))
+	add_option("Main menu", show_title)
 
 func load_progress() -> void:
 	var save := ConfigFile.new()
 	if save.load("user://progress.cfg") == OK:
 		embers = int(save.get_value("progress", "embers", 0))
 		warden_unlocked = bool(save.get_value("progress", "warden", false))
+		total_kills = int(save.get_value("progress", "total_kills", 0))
+		total_drafts = int(save.get_value("progress", "total_drafts", 0))
+		crossing_won = bool(save.get_value("progress", "crossing_won", false))
+		captain_defeated = bool(save.get_value("progress", "captain_defeated", false))
 
 func save_progress() -> void:
 	var save := ConfigFile.new()
 	save.set_value("progress", "embers", embers)
 	save.set_value("progress", "warden", warden_unlocked)
+	save.set_value("progress", "total_kills", total_kills)
+	save.set_value("progress", "total_drafts", total_drafts)
+	save.set_value("progress", "crossing_won", crossing_won)
+	save.set_value("progress", "captain_defeated", captain_defeated)
 	if save.save("user://progress.cfg") != OK:
 		push_warning("Could not save run progress.")
 

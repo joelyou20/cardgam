@@ -16,8 +16,12 @@ Cardgam is a Godot 4.7 prototype for a real-time arena battler. Import
   captain. Finished runs earn embers even on defeat. Spend three to unlock
   the Warden. Progress is saved locally by Godot.
 
-Gier, Moonrose, Xola Kain, and the Necroblade are available immediately for
-playtesting. Each has a separate pool of passive augments.
+Choose **Play** from the main menu to open the roster, or **Unlocks** to see
+requirements and progress. Vanguard is available from the start. Warden costs
+three embers. Unlock Gier with 30 defeats across finished runs, Moonrose by
+defending the beacon, Xola Kain by drafting four augments across runs, and the
+Necroblade by defeating the road captain. Each character has a separate pool
+of passive augments.
 
 | Character | Left click | Right click | Space | R |
 | --- | --- | --- | --- | --- |
